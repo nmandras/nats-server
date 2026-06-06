@@ -154,6 +154,7 @@ const (
 	compressionNegotiated                         // Marks if this connection has negotiated compression level with remote.
 	didTLSFirst                                   // Marks if this connection requested and was accepted doing the TLS handshake first (prior to INFO).
 	isSlowConsumer                                // Marks connection as a slow consumer.
+	isUDP                                         // Marks that this connection uses the UDP/DTLS transport.
 )
 
 // set the flag (would be equivalent to set the boolean to true)
@@ -2635,8 +2636,17 @@ func (c *client) generateClientInfoJSON(info Info, includeClientIP bool) []byte 
 			info.TLSAvailable, info.TLSRequired = ws.tls, ws.tls
 			info.Host, info.Port = ws.host, ws.port
 		}
+	} else if c.isUDPTransport() {
+		info.ClientConnectURLs = info.UDPConnectURLs
+		// Otherwise lame duck info can panic
+		if c.srv != nil {
+			udp := &c.srv.udp
+			info.DTLSAvailable, info.DTLSRequired = udp.tls, udp.tls
+			info.Host, info.Port = udp.host, udp.port
+		}
 	}
 	info.WSConnectURLs = nil
+	info.UDPConnectURLs = nil
 	return generateInfoJSON(&info)
 }
 

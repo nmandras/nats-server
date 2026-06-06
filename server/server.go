@@ -128,8 +128,11 @@ type Info struct {
 	Cluster           string   `json:"cluster,omitempty"`
 	Dynamic           bool     `json:"cluster_dynamic,omitempty"`
 	Domain            string   `json:"domain,omitempty"`
-	ClientConnectURLs []string `json:"connect_urls,omitempty"`    // Contains URLs a client can connect to.
-	WSConnectURLs     []string `json:"ws_connect_urls,omitempty"` // Contains URLs a ws client can connect to.
+	ClientConnectURLs []string `json:"connect_urls,omitempty"`     // Contains URLs a client can connect to.
+	WSConnectURLs     []string `json:"ws_connect_urls,omitempty"`  // Contains URLs a ws client can connect to.
+	UDPConnectURLs    []string `json:"udp_connect_urls,omitempty"` // Contains UDP endpoints a client can connect to.
+	DTLSAvailable     bool     `json:"dtls_available,omitempty"`   // Server offers DTLS on its UDP port.
+	DTLSRequired      bool     `json:"dtls_required,omitempty"`    // DTLS is mandatory on the UDP port.
 	LameDuckMode      bool     `json:"ldm,omitempty"`
 	Compression       string   `json:"compression,omitempty"`
 	ConnectInfo       bool     `json:"connect_info,omitempty"`   // When true this is the server INFO response to CONNECT
@@ -314,6 +317,9 @@ type Server struct {
 
 	// MQTT structure
 	mqtt srvMQTT
+
+	// UDP (and optional DTLS) transport structure
+	udp srvUDP
 
 	// OCSP monitoring
 	ocsps []*OCSPMonitor
@@ -1175,6 +1181,9 @@ func validateOptions(o *Options) error {
 		return err
 	}
 	if err := validateMQTTOptions(o); err != nil {
+		return err
+	}
+	if err := validateUDPOptions(o); err != nil {
 		return err
 	}
 	if err := validateJetStreamOptions(o); err != nil {
@@ -2524,6 +2533,11 @@ func (s *Server) Start() {
 		s.startMQTT()
 	}
 
+	// UDP (and optional DTLS)
+	if opts.UDP.Port != 0 {
+		s.startUDP()
+	}
+
 	// Start up routing as well if needed.
 	if opts.Cluster.Port != 0 {
 		s.startGoRoutine(func() {
@@ -2647,6 +2661,13 @@ func (s *Server) Shutdown() {
 		doneExpected++
 		s.mqtt.listener.Close()
 		s.mqtt.listener = nil
+	}
+
+	// Kick UDP accept loop
+	if s.udp.listener != nil {
+		doneExpected++
+		s.udp.listener.Close()
+		s.udp.listener = nil
 	}
 
 	// Kick leafnodes AcceptLoop()
@@ -3195,6 +3216,9 @@ func (s *Server) copyInfo() Info {
 	}
 	if len(info.WSConnectURLs) > 0 {
 		info.WSConnectURLs = append([]string(nil), s.info.WSConnectURLs...)
+	}
+	if len(info.UDPConnectURLs) > 0 {
+		info.UDPConnectURLs = append([]string(nil), s.info.UDPConnectURLs...)
 	}
 	return info
 }
@@ -3955,6 +3979,7 @@ func (s *Server) readyForConnections(d time.Duration) error {
 		chk["leafnode"] = info{ok: (opts.LeafNode.Port == 0 || s.leafNodeListener != nil), err: s.leafNodeListenerErr}
 		chk["websocket"] = info{ok: (opts.Websocket.Port == 0 || s.websocket.listener != nil), err: s.websocket.listenerErr}
 		chk["mqtt"] = info{ok: (opts.MQTT.Port == 0 || s.mqtt.listener != nil), err: s.mqtt.listenerErr}
+		chk["udp"] = info{ok: (opts.UDP.Port == 0 || s.udp.listener != nil), err: s.udp.listenerErr}
 		s.mu.RUnlock()
 
 		var numOK int

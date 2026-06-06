@@ -470,6 +470,7 @@ type Options struct {
 	JsAccDefaultDomain         map[string]string `json:"-"` // account to domain name mapping
 	Websocket                  WebsocketOpts     `json:"-"`
 	MQTT                       MQTTOpts          `json:"-"`
+	UDP                        UDPOpts           `json:"-"`
 	ProfPort                   int               `json:"-"`
 	ProfBlockRate              int               `json:"-"`
 	PidFile                    string            `json:"-"`
@@ -779,6 +780,55 @@ type MQTTOpts struct {
 	// downgradeQOS2Sub tells the MQTT client to downgrade QoS2 SUBSCRIBE
 	// requests to QoS1.
 	downgradeQoS2Sub bool
+}
+
+// UDPOpts are options for the UDP transport (with optional DTLS). UDP clients
+// speak the standard NATS protocol; only the underlying transport differs.
+//
+// Reliability note: plain UDP does not retransmit or reorder, so it is only
+// safe on lossless/controlled links. DTLS adds integrity but not reliability.
+type UDPOpts struct {
+	// The server will accept UDP client connections on this hostname/IP.
+	Host string
+	// The server will accept UDP client connections on this port.
+	Port int
+	// Hostname/IP and port advertised to clients in the INFO protocol.
+	Advertise string
+	// If true, do not advertise the UDP connect URLs to the cluster.
+	NoAdvertise bool
+
+	// If no user name is provided when a client connects, will default to the
+	// matching user from the global list of users in `Options.Users`.
+	NoAuthUser string
+
+	// Authentication section. If anything is configured in this section, it
+	// will override the authorization configuration of regular clients.
+	Username string
+	Password string
+	Token    string
+
+	// Timeout for the authentication process.
+	AuthTimeout float64
+
+	// If true, DTLS is disabled even when a TLSConfig is present.
+	NoDTLS bool
+
+	// DTLS configuration (translated from the standard tls block).
+	TLSConfig *tls.Config
+	// If true, map certificate values for authentication purposes.
+	TLSMap bool
+	// Timeout for the DTLS handshake.
+	TLSTimeout float64
+	// Set of allowable certificates.
+	TLSPinnedCerts PinnedCertSet
+
+	// Maximum datagram payload we will accept/emit on a UDP client. Defaults
+	// to a value kept under common path MTU. Used to clamp the client's
+	// MaxPayload and to size outbound datagrams.
+	MaxPayload int32
+
+	// Snapshot of configured TLS options.
+	tlsConfigOpts *TLSConfigOpts
 }
 
 type netResolver interface {
@@ -1774,6 +1824,11 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 		}
 	case "mqtt":
 		if err := parseMQTT(tk, o, errors, warnings); err != nil {
+			*errors = append(*errors, err)
+			return
+		}
+	case "udp":
+		if err := parseUDP(tk, o, errors, warnings); err != nil {
 			*errors = append(*errors, err)
 			return
 		}
@@ -5639,6 +5694,79 @@ func parseMQTT(v any, o *Options, errors *[]error, warnings *[]error) error {
 		case "downgrade_qos2_subscribe":
 			o.MQTT.downgradeQoS2Sub = mv.(bool)
 
+		default:
+			if !tk.IsUsedVariable() {
+				err := &unknownConfigFieldErr{
+					field: mk,
+					configErr: configErr{
+						token: tk,
+					},
+				}
+				*errors = append(*errors, err)
+				continue
+			}
+		}
+	}
+	return nil
+}
+
+func parseUDP(v any, o *Options, errors *[]error, warnings *[]error) error {
+	var lt token
+	defer convertPanicToErrorList(&lt, errors)
+
+	tk, v := unwrapValue(v, &lt)
+	gm, ok := v.(map[string]any)
+	if !ok {
+		return &configErr{tk, fmt.Sprintf("Expected udp to be a map, got %T", v)}
+	}
+	for mk, mv := range gm {
+		// Again, unwrap token value if line check is required.
+		tk, mv = unwrapValue(mv, &lt)
+		switch strings.ToLower(mk) {
+		case "listen":
+			hp, err := parseListen(mv)
+			if err != nil {
+				err := &configErr{tk, err.Error()}
+				*errors = append(*errors, err)
+				continue
+			}
+			o.UDP.Host = hp.host
+			o.UDP.Port = hp.port
+		case "port":
+			o.UDP.Port = int(mv.(int64))
+		case "host", "net":
+			o.UDP.Host = mv.(string)
+		case "advertise":
+			o.UDP.Advertise = mv.(string)
+		case "no_advertise":
+			o.UDP.NoAdvertise = mv.(bool)
+		case "no_dtls":
+			o.UDP.NoDTLS = mv.(bool)
+		case "tls", "dtls":
+			tc, err := parseTLS(tk, true)
+			if err != nil {
+				*errors = append(*errors, err)
+				continue
+			}
+			if o.UDP.TLSConfig, err = GenTLSConfig(tc); err != nil {
+				err := &configErr{tk, err.Error()}
+				*errors = append(*errors, err)
+				continue
+			}
+			o.UDP.TLSTimeout = tc.Timeout
+			o.UDP.TLSMap = tc.Map
+			o.UDP.TLSPinnedCerts = tc.PinnedCerts
+			o.UDP.tlsConfigOpts = tc
+		case "authorization", "authentication":
+			auth := parseSimpleAuth(tk, errors)
+			o.UDP.Username = auth.user
+			o.UDP.Password = auth.pass
+			o.UDP.Token = auth.token
+			o.UDP.AuthTimeout = auth.timeout
+		case "no_auth_user":
+			o.UDP.NoAuthUser = mv.(string)
+		case "max_payload":
+			o.UDP.MaxPayload = int32(mv.(int64))
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{

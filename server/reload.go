@@ -1562,7 +1562,7 @@ func imposeOrder(value any) error {
 	case WebsocketOpts:
 		slices.Sort(value.AllowedOrigins)
 	case string, bool, uint8, uint16, uint64, int, int32, int64, time.Duration, float64, nil, LeafNodeOpts, ClusterOpts, *tls.Config, PinnedCertSet,
-		*URLAccResolver, *MemAccResolver, *DirAccResolver, *CacheDirAccResolver, Authentication, MQTTOpts, jwt.TagList,
+		*URLAccResolver, *MemAccResolver, *DirAccResolver, *CacheDirAccResolver, Authentication, MQTTOpts, UDPOpts, jwt.TagList,
 		*OCSPConfig, map[string]string, map[string]bool, JSLimitOpts, StoreCipher, *OCSPResponseCacheConfig, *ProxiesConfig, WriteTimeoutPolicy:
 		// explicitly skipped types
 	case *AuthCallout:
@@ -1871,6 +1871,16 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			// If there is really a change prevents reload.
 			if !reflect.DeepEqual(tmpOld, tmpNew) {
 				// See TODO(ik) note below about printing old/new values.
+				return nil, fmt.Errorf("config reload not supported for %s: old=%v, new=%v",
+					field.Name, oldValue, newValue)
+			}
+		case "udp":
+			// Similar to websocket: UDP/DTLS transport changes require a restart.
+			tmpOld := oldValue.(UDPOpts)
+			tmpNew := newValue.(UDPOpts)
+			tmpOld.TLSConfig, tmpOld.tlsConfigOpts = nil, nil
+			tmpNew.TLSConfig, tmpNew.tlsConfigOpts = nil, nil
+			if !reflect.DeepEqual(tmpOld, tmpNew) {
 				return nil, fmt.Errorf("config reload not supported for %s: old=%v, new=%v",
 					field.Name, oldValue, newValue)
 			}

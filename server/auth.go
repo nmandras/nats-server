@@ -292,6 +292,8 @@ func (s *Server) configureAuthorization() {
 	s.wsConfigAuth(&opts.Websocket)
 	// And for mqtt config
 	s.mqttConfigAuth(&opts.MQTT)
+	// And for udp config
+	s.udpConfigAuth(&opts.UDP)
 
 	// Check for server configured auth callouts.
 	if opts.AuthCallout != nil {
