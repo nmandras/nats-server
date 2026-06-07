@@ -14,11 +14,13 @@
 package server
 
 import (
+	"bufio"
 	"crypto/tls"
 	"encoding/json"
 	"net"
 	"regexp"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -165,6 +167,60 @@ func TestValidateUDPOptions(t *testing.T) {
 	o = &Options{UDP: UDPOpts{Port: 4223, NoAuthUser: "ghost"}}
 	if err := validateUDPOptions(o); err == nil {
 		t.Fatalf("Expected error for unknown no_auth_user")
+	}
+	// TLSMap is not supported (DTLS terminated at listener) => fail closed.
+	o = &Options{UDP: UDPOpts{Port: 4223, TLSMap: true}}
+	if err := validateUDPOptions(o); err != errUDPTLSMapNotSupported {
+		t.Fatalf("Expected TLSMap-not-supported error, got %v", err)
+	}
+	// Pinned certs are not supported => fail closed.
+	o = &Options{UDP: UDPOpts{Port: 4223, TLSPinnedCerts: PinnedCertSet{"abc": struct{}{}}}}
+	if err := validateUDPOptions(o); err != errUDPTLSPinnedCertsNotSupported {
+		t.Fatalf("Expected pinned-certs-not-supported error, got %v", err)
+	}
+}
+
+// TestUDPAuthTokenEnforced is a security regression test: a UDP-specific auth
+// override (here a token) must actually be enforced, even when no global client
+// auth is configured. A missing or wrong token must be rejected; the correct
+// token must be accepted.
+func TestUDPAuthTokenEnforced(t *testing.T) {
+	s := runUDPServer(t, func(o *Options) {
+		o.UDP.Token = "s3cr3t"
+	})
+	defer s.Shutdown()
+
+	try := func(connect string) (pong, errd bool) {
+		c := dialUDP(t, s)
+		defer c.Close()
+		if _, err := c.Write([]byte(connect)); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		c.SetReadDeadline(time.Now().Add(2 * time.Second))
+		br := bufio.NewReaderSize(c, 8192)
+		for i := 0; i < 10; i++ {
+			line, err := br.ReadString('\n')
+			if err != nil {
+				break
+			}
+			switch {
+			case strings.HasPrefix(line, "PONG"):
+				return true, false
+			case strings.HasPrefix(line, "-ERR"):
+				return false, true
+			}
+		}
+		return false, false
+	}
+
+	if pong, _ := try("CONNECT {}\r\nPING\r\n"); pong {
+		t.Fatal("auth bypass: connection without token was authorized")
+	}
+	if pong, _ := try("CONNECT {\"auth_token\":\"wrong\"}\r\nPING\r\n"); pong {
+		t.Fatal("auth bypass: connection with wrong token was authorized")
+	}
+	if pong, _ := try("CONNECT {\"auth_token\":\"s3cr3t\"}\r\nPING\r\n"); !pong {
+		t.Fatal("valid token was not authorized")
 	}
 }
 

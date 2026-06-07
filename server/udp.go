@@ -25,8 +25,10 @@ import (
 )
 
 var (
-	errUDPUserMixWithUsersNKeys  = errors.New("udp authentication username not compatible with presence of users/nkeys")
-	errUDPTokenMixWithUsersNKeys = errors.New("udp authentication token not compatible with presence of users/nkeys")
+	errUDPUserMixWithUsersNKeys      = errors.New("udp authentication username not compatible with presence of users/nkeys")
+	errUDPTokenMixWithUsersNKeys     = errors.New("udp authentication token not compatible with presence of users/nkeys")
+	errUDPTLSMapNotSupported         = errors.New("udp: tls verify_and_map is not supported (DTLS is terminated at the listener)")
+	errUDPTLSPinnedCertsNotSupported = errors.New("udp: tls pinned_certs is not supported (DTLS is terminated at the listener)")
 )
 
 const (
@@ -182,6 +184,17 @@ func (s *Server) startUDP() {
 		s.mu.Unlock()
 		s.Fatalf("Unable to listen for UDP connections: %v", err)
 		return
+	}
+
+	// Security note: plain UDP source addresses are not validated, so the
+	// listener can be used as a reflection/amplification vector (a small
+	// spoofed datagram elicits the larger INFO protocol) and is trivially
+	// flooded with spoofed sources. DTLS mitigates this via its
+	// HelloVerifyRequest cookie exchange. Plain UDP should therefore only be
+	// exposed on trusted/controlled networks.
+	if !dtlsEnabled {
+		s.Warnf("UDP transport without DTLS does not validate source addresses; " +
+			"only expose it on trusted networks (use DTLS otherwise)")
 	}
 
 	if port == 0 {
@@ -378,8 +391,9 @@ func mapDTLSCipherSuites(suites []uint16) []dtls.CipherSuiteID {
 			out = append(out, dtls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256)
 		case tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256:
 			out = append(out, dtls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256)
-		case tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA:
-			out = append(out, dtls.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA)
+			// Suites without a DTLS-supported equivalent (e.g. AES-128-CBC) are
+			// intentionally dropped rather than substituted with a different
+			// suite, so we never silently change the configured security level.
 		}
 	}
 	return out
@@ -391,6 +405,16 @@ func validateUDPOptions(o *Options) error {
 	// If no port is defined, we don't care about other options.
 	if uo.Port == 0 {
 		return nil
+	}
+	// Certificate-based controls cannot be honored because DTLS is terminated
+	// at the listener and never flows through the standard TLS handshake path
+	// (which is what enforces cert->user mapping and pinned certs). Fail closed
+	// rather than silently ignore these security controls.
+	if uo.TLSMap {
+		return errUDPTLSMapNotSupported
+	}
+	if len(uo.TLSPinnedCerts) > 0 {
+		return errUDPTLSPinnedCertsNotSupported
 	}
 	// If there is a NoAuthUser, we need to have Users defined and the user to
 	// be present.

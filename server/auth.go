@@ -730,12 +730,16 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 	authRequired := s.info.AuthRequired
 	if !authRequired {
 		// If no auth required for regular clients, then check if
-		// we have an override for MQTT or Websocket clients.
+		// we have an override for MQTT, Websocket or UDP clients.
 		switch c.clientType() {
 		case MQTT:
 			authRequired = s.mqtt.authOverride
 		case WS:
 			authRequired = s.websocket.authOverride
+		default:
+			if c.isUDPTransport() {
+				authRequired = s.udp.authOverride
+			}
 		}
 	}
 	if !authRequired {
@@ -783,6 +787,21 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 				password = wo.Password
 				token = wo.Token
 				ao = true
+			}
+		default:
+			// UDP clients have clientType NATS but carry their own auth
+			// override and TLSMap, mirroring MQTT/WS above.
+			if c.isUDPTransport() {
+				uo := &opts.UDP
+				// Always override TLSMap.
+				tlsMap = uo.TLSMap
+				if s.udp.authOverride {
+					noAuthUser = uo.NoAuthUser
+					username = uo.Username
+					password = uo.Password
+					token = uo.Token
+					ao = true
+				}
 			}
 		}
 	} else {
